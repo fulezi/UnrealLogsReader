@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <map>
 #include <set>
+#include <regex>
 #include <nfd.h>
 
 // =========================================================
@@ -72,6 +73,8 @@ struct LogViewerState {
     bool ShowWarnings = true;
     bool ShowDisplay = true;
     char SearchBuffer[128] = "";
+    bool UseRegex = true;           // Interpret SearchBuffer as a regex (e.g. "Term1|Term2")
+    bool IsSearchRegexValid = true; // False if the regex failed to compile (falls back to plain text)
     std::string SelectedCategory = "All";
     std::set<std::string> UniqueCategories; // To populate the dropdown
 
@@ -196,6 +199,19 @@ struct LogViewerState {
         std::string search(SearchBuffer);
         std::ranges::transform(search, search.begin(), ::tolower);
 
+        // Compile the regex once per filter pass; fall back to plain text search if invalid
+        std::regex searchRegex;
+        bool useRegex = false;
+        IsSearchRegexValid = true;
+        if (UseRegex && !search.empty()) {
+            try {
+                searchRegex = std::regex(SearchBuffer, std::regex::ECMAScript | std::regex::icase | std::regex::optimize);
+                useRegex = true;
+            } catch (const std::regex_error&) {
+                IsSearchRegexValid = false;
+            }
+        }
+
         std::set<size_t> seenHashes;
         bool isSkippingDuplicates = false;
 
@@ -225,7 +241,10 @@ struct LogViewerState {
             if (log.Level == LogLevel::Display && !ShowDisplay) continue;
             if (SelectedCategory != "All" && log.Category != SelectedCategory) continue;
 
-            if (!search.empty()) {
+            if (useRegex) {
+                if (!std::regex_search(log.FullText, searchRegex)) continue;
+            }
+            else if (!search.empty()) {
                 std::string logLower = log.FullText;
                 std::ranges::transform(logLower, logLower.begin(), ::tolower);
                 if (logLower.find(search) == std::string::npos) continue;
@@ -347,6 +366,15 @@ void RenderLogViewer() {
     ImGui::Text("Search:"); ImGui::SameLine();
     if (ImGui::InputText("##Search", g_LogState.SearchBuffer, sizeof(g_LogState.SearchBuffer))) {
         filterChanged = true;
+    }
+    ImGui::SameLine();
+    filterChanged |= ImGui::Checkbox("Regex", &g_LogState.UseRegex);
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Case-insensitive regular expression, e.g. \"Term1|Term2\"");
+    }
+    if (g_LogState.UseRegex && !g_LogState.IsSearchRegexValid) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "Invalid regex (plain text search)");
     }
     ImGui::SameLine();
     if (ImGui::Button("+"))
